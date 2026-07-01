@@ -9,8 +9,9 @@ If you use GEOSPH's source code directly or indirectly, pursuant to the GNU lice
 
 Also contributed to the code in its current version:
   - Dr. Benjamin Mullet
-  - Dr. Enrique Miguel del Castillo
+  - Dr. Enrique M. del Castillo
+  - Dr. Erick Rogenes
 
 The source code was built upon the Python SPH framework developed by Ramachandran et al. (2021) - "SPH: A Python-Based Framework for Smoothed Particle Hydrodynamics," which can be accessed at https://doi.org/10.1145/3460773. 
 
-Repository last updated: February 10th, 2025.
+Repository last updated: July 1st, 2026.
