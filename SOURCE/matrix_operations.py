@@ -931,7 +931,7 @@ def matrix_inverse_exact(mat=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     dbg_vec[1] = det
 
     # Condition number if the matrix is 2x2 or 3x3
-    k = 1e12
+    k = 1e16
     if det > 0.0 and isinf(det) == False and isnan(det) == False:
         if n < 4:
             eig_vals_3x3_analytical(mat, evals)
@@ -943,7 +943,7 @@ def matrix_inverse_exact(mat=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         else:
             # TODO: This needs to be implemented, i.e., eigvals for 4x4 matrix
             #  as in else statement below (01/30/2024)
-            k = 1.0
+            pass
 
     dbg_vec[2] = k
 
@@ -1039,6 +1039,7 @@ def eig_vals_3x3_analytical(mat=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     @return: None
     """
     m_dev, t, sm_dev, res = declare("matrix(9)", 4)
+    i, j, k, n = declare('int', 4)
 
     # Read matrix terms
     a11 = mat[0]
@@ -1055,7 +1056,7 @@ def eig_vals_3x3_analytical(mat=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     s = sqrt(j2 / 3.0)
 
     # Check if matrix was isotropic
-    if s < 1e-9:
+    if s < 1e-12:
         eig_vals[0] = eig_vals[1] = eig_vals[2] = i1
 
     else:
@@ -1068,7 +1069,13 @@ def eig_vals_3x3_analytical(mat=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         m_dev[5] = m_dev[7] = a23
 
         # Calculate the matrix T
-        matrix_multiply(m_dev, m_dev, t, 3)
+        n = 3
+        for i in range(n):
+            for j in range(n):
+                s = 0.0
+                for k in range(n):
+                    s += m_dev[n * i + k] * m_dev[n * k + j]
+                t[n * i + j] = s
 
         t[0] -= 2 * j2 / 3
         t[4] -= 2 * j2 / 3
@@ -1507,3 +1514,186 @@ def matrix_zero(mat=[0.0, 0.0], n=2):
     i = declare("int")
     for i in range(n):
         mat[i] = 0.0
+
+###############################################################################
+# 4x4 matrix inversion
+
+def invert4x4_unrolled_branchless(M, tol=1e-12):
+    """
+    Fully unrolled 4x4 Gauss–Jordan inverse with partial pivoting.
+    Pivoting and row selection done via masks (no ifs in the math core).
+    Pure Python; structurally branchless and SIMD-friendly.
+    """
+
+    # Copy into working buffers (flat layout)
+    A = [float(x) for x in M]
+    B = [
+        1.0,0.0,0.0,0.0,
+        0.0,1.0,0.0,0.0,
+        0.0,0.0,1.0,0.0,
+        0.0,0.0,0.0,1.0
+    ]
+
+    # -----------------------------
+    # Column 0 pivot (branchless selection)
+    # -----------------------------
+    v0 = abs(A[0])
+    v1 = abs(A[4])
+    v2 = abs(A[8])
+    v3 = abs(A[12])
+
+    piv = 0
+    maxv = v0
+
+    m = float(v1 > maxv)
+    piv = int(m*1 + (1-m)*piv)
+    maxv = m*v1 + (1-m)*maxv
+
+    m = float(v2 > maxv)
+    piv = int(m*2 + (1-m)*piv)
+    maxv = m*v2 + (1-m)*maxv
+
+    m = float(v3 > maxv)
+    piv = int(m*3 + (1-m)*piv)
+    maxv = m*v3 + (1-m)*maxv
+
+    if maxv < tol:
+        raise ValueError("Matrix is singular or nearly singular (col 0)")
+
+    swap_rows(0, piv)
+
+    # Normalize row 0
+    pivval = A[0]
+    invp = 1.0 / pivval
+    A[0] *= invp; A[1] *= invp; A[2] *= invp; A[3] *= invp
+    B[0] *= invp; B[1] *= invp; B[2] *= invp; B[3] *= invp
+
+    # Eliminate rows 1,2,3
+    f = A[4]
+    A[4] -= f*A[0]; A[5] -= f*A[1]; A[6] -= f*A[2]; A[7] -= f*A[3]
+    B[4] -= f*B[0]; B[5] -= f*B[1]; B[6] -= f*B[2]; B[7] -= f*B[3]
+
+    f = A[8]
+    A[8]  -= f*A[0]; A[9]  -= f*A[1]; A[10] -= f*A[2]; A[11] -= f*A[3]
+    B[8]  -= f*B[0]; B[9]  -= f*B[1]; B[10] -= f*B[2]; B[11] -= f*B[3]
+
+    f = A[12]
+    A[12] -= f*A[0]; A[13] -= f*A[1]; A[14] -= f*A[2]; A[15] -= f*A[3]
+    B[12] -= f*B[0]; B[13] -= f*B[1]; B[14] -= f*B[2]; B[15] -= f*B[3]
+
+    # -----------------------------
+    # Column 1 pivot
+    # -----------------------------
+    v1 = abs(A[5])
+    v2 = abs(A[9])
+    v3 = abs(A[13])
+
+    piv = 1
+    maxv = v1
+
+    m = float(v2 > maxv)
+    piv = int(m*2 + (1-m)*piv)
+    maxv = m*v2 + (1-m)*maxv
+
+    m = float(v3 > maxv)
+    piv = int(m*3 + (1-m)*piv)
+    maxv = m*v3 + (1-m)*maxv
+
+    if maxv < tol:
+        raise ValueError("Matrix is singular or nearly singular (col 1)")
+
+    swap_rows(1, piv)
+
+    # Normalize row 1
+    pivval = A[5]
+    invp = 1.0 / pivval
+    A[5] *= invp; A[6] *= invp; A[7] *= invp
+    B[5] *= invp; B[6] *= invp; B[7] *= invp
+
+    # Eliminate rows 0,2,3
+    f = A[1]
+    A[1] -= f*A[5]; A[2] -= f*A[6]; A[3] -= f*A[7]
+    B[1] -= f*B[5]; B[2] -= f*B[6]; B[3] -= f*B[7]
+
+    f = A[9]
+    A[9]  -= f*A[5]; A[10] -= f*A[6]; A[11] -= f*A[7]
+    B[9]  -= f*B[5]; B[10] -= f*B[6]; B[11] -= f*B[7]
+
+    f = A[13]
+    A[13] -= f*A[5]; A[14] -= f*A[6]; A[15] -= f*A[7]
+    B[13] -= f*B[5]; B[14] -= f*B[6]; B[15] -= f*B[7]
+
+    # -----------------------------
+    # Column 2 pivot
+    # -----------------------------
+    v2 = abs(A[10])
+    v3 = abs(A[14])
+
+    piv = 2
+    maxv = v2
+
+    m = float(v3 > maxv)
+    piv = int(m*3 + (1-m)*piv)
+    maxv = m*v3 + (1-m)*maxv
+
+    if maxv < tol:
+        raise ValueError("Matrix is singular or nearly singular (col 2)")
+
+    swap_rows(2, piv)
+
+    # Normalize row 2
+    pivval = A[10]
+    invp = 1.0 / pivval
+    A[10] *= invp; A[11] *= invp
+    B[10] *= invp; B[11] *= invp
+
+    # Eliminate rows 0,1,3
+    f = A[2]
+    A[2] -= f*A[10]; A[3] -= f*A[11]
+    B[2] -= f*B[10]; B[3] -= f*B[11]
+
+    f = A[6]
+    A[6] -= f*A[10]; A[7] -= f*A[11]
+    B[6] -= f*B[10]; B[7] -= f*B[11]
+
+    f = A[14]
+    A[14] -= f*A[10]; A[15] -= f*A[11]
+    B[14] -= f*B[10]; B[15] -= f*B[11]
+
+    # -----------------------------
+    # Column 3 pivot
+    # -----------------------------
+    v3 = abs(A[15])
+    maxv = v3
+
+    if maxv < tol:
+        raise ValueError("Matrix is singular or nearly singular (col 3)")
+
+    # Normalize row 3
+    pivval = A[15]
+    invp = 1.0 / pivval
+    A[15] *= invp
+    B[15] *= invp
+
+    # Eliminate rows 0,1,2
+    f = A[3]
+    A[3] -= f*A[15]
+    B[3] -= f*B[15]
+
+    f = A[7]
+    A[7] -= f*A[15]
+    B[7] -= f*B[15]
+
+    f = A[11]
+    A[11] -= f*A[15]
+    B[11] -= f*B[15]
+
+    return B
+
+# Helper: swap rows r1 <-> r2 unconditionally (swapping same row is harmless)
+def swap_rows(r1, r2):
+    i1 = 4*r1
+    i2 = 4*r2
+    for k in range(4):
+        A[i1+k], A[i2+k] = A[i2+k], A[i1+k]
+        B[i1+k], B[i2+k] = B[i2+k], B[i1+k]

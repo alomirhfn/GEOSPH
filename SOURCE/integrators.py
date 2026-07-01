@@ -26,3 +26,22 @@ class MyLeapFrogIntegrator(Integrator):
 
         self.stage2()
         self.do_post_stage(dt, 2)
+
+
+class MyPECIntegrator(Integrator):
+    r"""
+      A predictor-corrector integrator.
+    """
+
+    def one_timestep(self, t, dt):
+        self.initialize()
+
+        self.stage1()
+        self.update_domain()
+        self.do_post_stage(dt, 1)
+
+        self.compute_accelerations()
+
+        self.stage2()
+        self.update_domain()
+        self.do_post_stage(dt, 2)

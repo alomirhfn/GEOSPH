@@ -1,16 +1,42 @@
 from pysph.sph.equation import Equation
 from compyle.api import declare
-from math import sqrt, fabs
+from math import sqrt, fabs, exp
 from matrix_operations import matrix_multiply_vector
 
 r""" 
 This file implements all formulations necessary to perform particle shifting.
 
-The formulations implemented are based on the following work:
+The formulations implemented are based on the following works:
+
+    - Michel, J., Vergnaud, A., Oger, G., Hermange, C., & Le Touzé, D. (2022). 
+      On Particle Shifting Techniques (PSTs): Analysis of existing laws and 
+      proposition of a convergent and multi-invariant law. Journal of 
+      Computational Physics, 459, 110999. 
+      https://doi.org/10.1016/j.jcp.2022.110999
+      
+    - Krimi, A., Jandaghian, M., & Shakibaeinia, A. (2020). A WCSPH Particle 
+      Shifting Strategy for Simulating Violent Free Surface Flows. Water, 
+      12(11), 3189. https://doi.org/10.3390/w12113189
+
     - Zhang, S., Wang, F., Hu, X., & Lourenco, S.D.N. (2025). A Unified 
       Transport-Velocity Formulation for SPH Simulation of Cohesive Granular 
       Materials. Computers and Geotechnics (in press).
+    
+    - Feng, R., Fourtakas, G., Rogers, B. D., & Lombardi, D. (2024). A general 
+      smoothed particle hydrodynamics (SPH) formulation for coupled liquid flow
+      and solid deformation in porous media. Computer Methods in Applied 
+      Mechanics and Engineering, 419, 116581. 
+      https://doi.org/10.1016/j.cma.2023.116581
+    
+    - Domínguez, J. M., Fourtakas, G., Altomare, C., Canelas, R. B., 
+      Tafuni, A., García-Feal, O., Martínez-Estévez, I., Mokos, A., 
+      Vacondio, R., Crespo, A. J. C., Rogers, B. D., Stansby, P. K., & 
+      Gómez-Gesteira, M. (2022). DualSPHysics: From fluid dynamics to 
+      multiphysics problems. Computational Particle Mechanics, 9(5), 867–895. 
+      https://doi.org/10.1007/s40571-021-00404-2
 """
+
+# =============================================================================
 
 class ParticleShiftPreCalcs(Equation):
 
@@ -18,19 +44,19 @@ class ParticleShiftPreCalcs(Equation):
         self.simdim = sim_dim
         super(ParticleShiftPreCalcs, self).__init__(dest, sources)
 
-    def initialize(self, d_idx, d_divx, d_gradc, d_gfick, d_n, d_pstype):
+    def initialize(self, d_idx, d_divr, d_dwsum, d_gfick, d_n, d_pstype):
         i, idx = declare("int", 2)
 
-        d_divx[d_idx] = 0.0
+        d_divr[d_idx] = 0.0
         d_pstype[d_idx] = 0
 
         idx = 3 * d_idx
         for i in range(3):
-            d_gradc[idx + i] = 0.0
+            d_dwsum[idx + i] = 0.0
             d_gfick[idx + i] = 0.0
             d_n[idx + i] = 0.0
 
-    def loop(self, d_idx, d_gid, d_divx, d_gradc, d_gfick, d_l_mat, d_wdp,
+    def loop(self, d_idx, d_gid, d_divr, d_dwsum, d_gfick, d_l_mat, d_wdp,
              s_idx, s_gid, s_m, s_rho, XIJ, WIJ, DWIJ):
         """
         According to Michel et al. (2022) the gradient of concentration (or
@@ -57,8 +83,8 @@ class ParticleShiftPreCalcs(Equation):
             cj = vj * (1 + 0.2 * (WIJ / d_wdp[0]) ** 4)  # Concentration coeff.
             idx = 3 * d_idx
             for i in range(3):
-                d_divx[d_idx] -= vj * XIJ[i] * DWIJ[i]
-                d_gradc[idx + i] -= vj * dwij[i]  # For normal calculation
+                d_divr[d_idx] -= vj * XIJ[i] * DWIJ[i]
+                d_dwsum[idx + i] -= vj * dwij[i]  # For normal calculation
                 d_gfick[idx + i] -= cj * dwij[i]  # For shifting direction
 
     def _get_helpers_(self):
@@ -72,14 +98,14 @@ class ZhangParticleShift(Equation):
         self.simdim = simdim
         super(ZhangParticleShift, self).__init__(dest, sources)
 
-    def initialize(self, d_idx, d_divx, d_pstype, d_gradc, d_n, d_phips):
+    def initialize(self, d_idx, d_divr, d_pstype, d_dwsum, d_n, d_phips):
         i, idx = declare("int", 2)
         idx = 3 * d_idx
 
         # Classify particle as free surface or not (1-FS, 0-Not FS, 2-Ext.)
-        if d_divx[d_idx] < 1.0:
+        if d_divr[d_idx] < 1.0:
             d_pstype[d_idx] = 2
-        elif d_divx[d_idx] < 0.75 * self.simdim:
+        elif d_divr[d_idx] < 0.75 * self.simdim:
             d_pstype[d_idx] = 1
 
         # === Calculate free surface normal for free surface particles only ===
@@ -88,13 +114,13 @@ class ZhangParticleShift(Equation):
             # Calculate the norm of the concentration gradient
             norm_gc = 0.0
             for i in range(3):
-                norm_gc += d_gradc[idx + i] ** 2
+                norm_gc += d_dwsum[idx + i] ** 2
 
             norm_gc = sqrt(norm_gc)
 
             # Calculate the particle normal
             for i in range(3):
-                d_n[idx + i] = d_gradc[idx + i] / norm_gc
+                d_n[idx + i] = d_dwsum[idx + i] / norm_gc
         # =====================================================================
 
         # Set FS/NFS identifier

@@ -2,7 +2,6 @@ import cython
 from textwrap import dedent
 from pysph.sph.equation import Equation
 from compyle.api import declare
-from matrix_operations import matrix_multiply_vector
 
 
 class MonaghanArtificialViscosity(Equation):
@@ -60,11 +59,10 @@ class MonaghanArtificialViscosity(Equation):
         d_av_a[idx + 1] = 0.0
         d_av_a[idx + 2] = 0.0
 
-    def loop(self, d_idx, d_av_a, d_cs, d_l_mat, s_idx, s_m, s_cs, VIJ, XIJ,
-             HIJ, R2IJ, RHOIJ1, EPS, DWIJ):
-        i, idx = declare("int", 2)
-        dwij = declare("matrix(3)")
-        l_mat = declare("matrix(9)")
+    def loop(self, d_idx, d_av_a, d_cs, s_idx, s_m, s_cs, VIJ, XIJ, HIJ, R2IJ,
+             RHOIJ1, EPS, DWIJ):
+        idx = declare("int")
+        idx = 3 * d_idx
 
         if self.alpha != 0.0 or self.beta != 0.0:
 
@@ -72,14 +70,6 @@ class MonaghanArtificialViscosity(Equation):
             v_rel = VIJ[0] * XIJ[0] + VIJ[1] * XIJ[1] + VIJ[2] * XIJ[2]
 
             if v_rel < 0:
-
-                # Convert inv(L) matrix into a c-array
-                idx = 9 * d_idx
-                for i in range(9):
-                    l_mat[i] = d_l_mat[idx + i]
-
-                # Correct the kernel gradient
-                matrix_multiply_vector(l_mat, DWIJ, dwij, 3)
 
                 # Average sound speed velocity
                 cij = 0.5 * (d_cs[d_idx] + s_cs[s_idx])
@@ -89,13 +79,9 @@ class MonaghanArtificialViscosity(Equation):
                         RHOIJ1)
                 m_p = s_m[s_idx] * piij
 
-                idx = 3 * d_idx
-                d_av_a[idx] += m_p * dwij[0]
-                d_av_a[idx + 1] += m_p * dwij[1]
-                d_av_a[idx + 2] += m_p * dwij[2]
-
-    def _get_helpers_(self):
-        return [matrix_multiply_vector]
+                d_av_a[idx] += m_p * DWIJ[0]
+                d_av_a[idx + 1] += m_p * DWIJ[1]
+                d_av_a[idx + 2] += m_p * DWIJ[2]
 
 
 class PySPHArtificialStress(Equation):
@@ -319,3 +305,52 @@ class PySPHArtificialStress(Equation):
             printf("%.9f %.9f %.9f\n", d_as_a[3*d_idx], d_as_a[3*d_idx + 1],
                    d_as_a[3*d_idx + 2])
             printf("====================================\n")
+
+
+class MonaghanXSPH(Equation):
+    r"""
+    Classical Monaghan XSPH velocity regularization [Monaghan, 1989]_
+
+    .. math::
+
+        \^{\boldsymbol{v}}_i = \boldsymbol{v}_i+\xi\sum_{j}
+        \frac{m_j}{\overline{\rho}_{ij}} \boldsymbol{v}_{ji}\ nabla_{i}W_{ij}
+
+    where
+
+    .. math::
+
+        \overline{\rho}_{ij} = \frac{\rho_i + \rho_j}{2}
+
+    and
+
+    .. math::
+
+        0 \leq \xi \leq 1.0
+
+    References
+    ----------
+    .. [Monaghan1989] J. Monaghan, "SPH elastic Dynamics",
+        Comput. Methods Appl. Mech. Engrg., 190 (1989), pp. 6641-6662.
+    """
+
+    def __init__(self, dest, sources, xi=0.5):
+        r"""
+        Parameters
+        ----------
+        xi : float
+            XSPH parameter
+        """
+        self.xi = xi
+        super(MonaghanXSPH, self).__init__(dest, sources)
+
+    def initialize(self):
+        pass
+
+    def loop(self, d_idx, d_u, d_v, d_w, d_wsum, s_idx, s_m, VIJ, RHOIJ1, WIJ):
+
+        if self.xi != 0.0:
+            coeff = -self.xi * s_m[s_idx] * WIJ * RHOIJ1 / d_wsum[d_idx]
+            d_u[d_idx] += coeff * VIJ[0]
+            d_v[d_idx] += coeff * VIJ[1]
+            d_w[d_idx] += coeff * VIJ[2]

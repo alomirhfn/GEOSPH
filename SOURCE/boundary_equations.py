@@ -1,5 +1,7 @@
 from pysph.sph.equation import Equation
 from compyle.api import declare
+from math import fabs
+
 
 class BoundaryStress(Equation):
     r"""
@@ -26,15 +28,20 @@ class BoundaryStress(Equation):
         Computational Physics, 231(21), 2012, pp. 7057-7075.
     """
 
-    def __init__(self, dest, sources, sim_dim=2, debug_bound=0):
-        self.sim_dim = sim_dim
-        self.debug_bound = debug_bound
+    def __init__(self, dest, sources):
         super(BoundaryStress, self).__init__(dest, sources)
 
-    def initialize(self, d_idx, d_sigma):
+    def initialize(self, d_idx, d_u, d_v, d_w, d_vb, d_sigma):
         i, idx = declare("int", 2)
-        idx = 9*d_idx
+        idx = 3 * d_idx
 
+        # Initialize velocity
+        d_u[d_idx] = d_vb[idx]
+        d_v[d_idx] = d_vb[idx + 1]
+        d_w[d_idx] = d_vb[idx + 2]
+
+        # Initialize stress
+        idx = 9 * d_idx
         for i in range(9):
             d_sigma[idx + i] = 0.0
 
@@ -88,20 +95,23 @@ class BoundaryPressure(Equation):
             d_pw[d_idx] = 0.0
 
 
-class DummyBoundary(Equation):
+class MyDummyBoundary(Equation):
     r"""
-        Boundary conditions proposed by Bui and co-authors to impose free-slip
-        and fixed boundary conditions using three to four layers of fixed
-        particles.
+        No-slip and free-slip boundary conditions proposed by Bui et al. and
+        modified by Favero Neto.
 
-        For the fixed BC, the velocity of boundary particles is the
+        This is a variant of dummy boundary conditions that use three to four
+        layers of particles fixed in space or moving with prescribed velocity
+        $v_b$.
+
+        For the no-slip BC, the velocity of boundary particles is the
         opposite of the smoothed average of internal neighbor particles'
         velocities, and the stress tensor is the smoothed average of the
         internal neighbor particles' stress tensors.
 
         .. math::
 
-            v_b = -\sum_{a=1}^{N_a} V_a v_a \tilde{W}_{ba}
+            u_b = -\sum_{a=1}^{N_a} V_a (v_a - 2v_b) \tilde{W}_{ba}
 
         .. math::
 
@@ -116,17 +126,20 @@ class DummyBoundary(Equation):
 
         For free-slip BC, the normal component of  velocity for the boundary
         particles is the opposite of the smoothed average normal velocity of
-        internal neighbor particles' velocities, while the tangential component
-        is the same. The stress tensor diagonal components are the average of
-        those from neighbor particles, while off-diagonal are the opposite.
+        internal neighbor particles' velocities plus twice the boundary
+        prescribed normal velocity, while the tangential component is the same.
+        The stress tensor diagonal components are the average of the normal
+        mean stress from neighbor particles, while off-diagonal are the
+        opposite of those from neighbor particles. The factor of two was
+        prescribed in Villodi and Ramachandran (2024).
 
         .. math::
 
-            v_{b,n} = -\sum_{a=1}^{N_a} V_{a,n} v_a \tilde{W}_{ba}
+            u_{b,n} = -\sum_{a=1}^{N_a} V_a (v_{a,n} - 2v_{b,n}) \tilde{W}_{ba}
 
         .. math::
 
-            v_{b,t} = \sum_{a=1}^{N_a} V_{a,t} v_a \tilde{W}_{ba}
+            u_{b,t} = \sum_{a=1}^{N_a} V_a v_{a,t} \tilde{W}_{ba}
 
         where the subscripts n and t refer to normal and tangential components,
         respectively.
@@ -135,8 +148,8 @@ class DummyBoundary(Equation):
 
             \sigma_b =
             \begin{cases}
-              \sum_{a=1}^{N_a}V_a\sigma_a^{ij}\tilde{W}_{ba},& \text{if } i=j\\
-              -\sum_{a=1}^{N_a}V_a\sigma_a^{ij}\tilde{W}_{ba},& \text{else}
+              \sum_{a=1}^{N_a} V_a p_a \tilde{W}_{ba}, & \text{if } i=j\\
+              -\sum_{a=1}^{N_a} V_a \sigma_a^{ij} \tilde{W}_{ba}, & \text{else}
             \end{cases}
 
         where i, j refer to cartesian coordinates (indices) of the tensor.
@@ -147,69 +160,138 @@ class DummyBoundary(Equation):
          A. Bouazza, "A scalable parallel computing SPH framework for
          predictions of geophysical granular flows", Computers and Geotechnics,
          121, 2020.
+        .. Villodi, N., & Ramachandran, P. (2024). Robust solid boundary
+        treatment for compressible smoothed particle hydrodynamics. Physics of
+        Fluids, 36(8), 086130. https://doi.org/10.1063/5.0220606
+
     """
 
-    def __init__(self, dest, sources, sim_dim=2, debug_bound=0):
+    def __init__(self, dest, sources, sim_dim=2, coeff=0.0, cf=0.0):
         self.sim_dim = sim_dim
-        self.debug_bound = debug_bound
-        super(DummyBoundary, self).__init__(dest, sources)
+        self.coeff = coeff  # Seems to work well with 0 up to 0.4
+        self.cf = cf  # For vane simulations, use cf = 1.0 (0.0 otherwise)
+        super(MyDummyBoundary, self).__init__(dest, sources)
 
-    def initialize(self, d_idx, d_sigma, d_u, d_v, d_w, d_vb):
+    def initialize(self, d_idx, d_sigma, d_u, d_v, d_w, d_vb, d_bc, d_n,
+                   d_type):
         i, idx = declare("int", 2)
 
         # Initialize stress
-        idx = 9*d_idx
+        idx = 9 * d_idx
         for i in range(9):
             d_sigma[idx + i] = 0.0
 
-        # Initialize velocities. The factor of two multiplying the actual
-        #  boundary particle velocity is to enforce no-penetration. When
-        #  boundaries are moving, without that, particles were penetrating the
-        #  boundaries.
-        #  TODO: VALIDATE (07/31/2023)
+        # Initialize velocities since vb is the one used to move the boundary
         idx = 3 * d_idx
-        d_u[d_idx] = 2 * d_vb[idx]
-        d_v[d_idx] = 2 * d_vb[idx + 1]
-        d_w[d_idx] = 2 * d_vb[idx + 2]
+
+        # Boundary prescribed velocity components
+        mod = 1 + self.cf
+        vbx = mod * d_vb[idx]
+        vby = mod * d_vb[idx + 1]
+        vbz = mod * d_vb[idx + 2]
+
+        # No-slip
+        if d_bc[d_idx] == 0:
+            d_u[d_idx] = vbx
+            d_v[d_idx] = vby
+            d_w[d_idx] = vbz
+
+        # Free-slip
+        else:
+
+            # Normal vector components
+            nx = d_n[idx]
+            ny = d_n[idx + 1]
+            nz = d_n[idx + 2]
+
+            # Normal prescribed velocity
+            vbn = vbx * nx + vby * ny + vbz * nz
+
+            d_u[d_idx] = vbn * nx
+            d_v[d_idx] = vbn * ny
+            d_w[d_idx] = vbn * nz
 
     def loop(self, d_idx, d_u, d_v, d_w, d_sigma, d_wsum, d_bc, d_n, s_idx,
              s_m, s_rho, s_f, s_u, s_v, s_w, s_sigma, XIJ, WIJ):
 
         i, idx, jdx = declare("int", 3)
-
-        idx = 9 * d_idx
         jdx = 9 * s_idx
         wij = s_m[s_idx] * WIJ / (s_rho[s_idx] * d_wsum[d_idx])
-        u = s_u[s_idx]  # Velocity vector components
+
+        # Domain particle velocity vector components
+        u = s_u[s_idx]
         v = s_v[s_idx]
         w = s_w[s_idx]
 
         if d_bc[d_idx] == 0:  # No-slip BC
+            idx = 9 * d_idx
 
             # Extrapolate stress to the boundary particle
             for i in range(9):
                 d_sigma[idx + i] += wij * s_sigma[jdx + i]
 
             # Extrapolate velocity to the boundary particles
-            d_u[d_idx] -= wij * u
-            d_v[d_idx] -= wij * v
-            d_w[d_idx] -= wij * w
+            idx = 3 * d_idx
+            nx = d_n[idx]
+            ny = d_n[idx + 1]
+            if abs(nx) > abs(ny):
+                nr = abs(ny) / abs(nx)
+            else:
+                nr = abs(nx) / abs(ny)
+            coeff = 1.0 - nr * (1.0 - self.coeff)
+
+            d_u[d_idx] -= coeff * wij * u
+            d_v[d_idx] -= coeff * wij * v
+            d_w[d_idx] -= coeff * wij * w
 
         else:  # Free-slip BC
+            idx = 3 * d_idx
 
-            # Extrapolate stress to the boundary particle
-            for i in range(9):
-                if i % 4 == 0:
-                    d_sigma[idx + i] += wij * s_sigma[jdx + i]
-                else:
-                    d_sigma[idx + i] -= wij * s_sigma[jdx + i]
-
-            # Extrapolate velocity to the boundary particles
-            idx = 3*d_idx
-            nx = d_n[idx]  # Normal vector components
+            # Normal vector components
+            nx = d_n[idx]
             ny = d_n[idx + 1]
             nz = d_n[idx + 2]
-            vel = u * nx + v * ny + w * nz  # Normal velocity norm
+
+            # Enforce only normal traction condition
+            sxx = s_sigma[jdx]
+            syy = s_sigma[jdx + 4]
+            szz = s_sigma[jdx + 8]
+            sxy = s_sigma[jdx + 1]
+            sxz = s_sigma[jdx + 2]
+            syz = s_sigma[jdx + 5]
+
+            # Traction vectors components
+            tx = sxx * nx + sxy * ny + sxz * nz
+            ty = sxy * nx + syy * ny + syz * nz
+            tz = sxz * nx + syz * ny + szz * nz
+
+            # Normal component of traction vector
+            tn = tx * nx + ty * ny + tz * nz
+
+            # Normal traction vector
+            tnx = tn * nx
+            tny = tn * ny
+            tnz = tn * nz
+
+            # Tangential traction vector
+            ttx = tx - tnx
+            tty = ty - tny
+            ttz = tz - tnz
+
+            # Final stress tensor
+            idx = 9 * d_idx
+            d_sigma[idx + 0] += wij * (sxx - ttx * nx)
+            d_sigma[idx + 1] += wij * (sxy - ttx * ny)
+            d_sigma[idx + 2] += wij * (sxz - ttx * nz)
+            d_sigma[idx + 3] += wij * (sxy - tty * nx)
+            d_sigma[idx + 4] += wij * (syy - tty * ny)
+            d_sigma[idx + 5] += wij * (syz - tty * nz)
+            d_sigma[idx + 6] += wij * (sxz - ttz * nx)
+            d_sigma[idx + 7] += wij * (syz - ttz * ny)
+            d_sigma[idx + 8] += wij * (szz - ttz * nz)
+
+            # Normal component of extrapolated velocity
+            vel = u * nx + v * ny + w * nz
 
             d_u[d_idx] += wij * (u - 2 * vel * nx)
             d_v[d_idx] += wij * (v - 2 * vel * ny)

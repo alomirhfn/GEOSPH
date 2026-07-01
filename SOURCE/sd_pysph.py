@@ -1,6 +1,7 @@
 import os
 import numpy as np
 from math import sqrt, pi
+from cyarray.carray import DoubleArray
 
 # =============================================================================
 # ================================ PySPH IMPORTS ==============================
@@ -20,51 +21,67 @@ from pysph.sph.equation import Group
 
 # =============================================================================
 # ============================ MY OWN MODULES =================================
-from io_utils import (import_parts_data, import_simulation_parameters,
-                      get_csv_header, separate_particle_data_arrays,
-                      convert_pysph_output)
+from boundary_particles_utils import boundary_normals
 
-from integrators import MyEulerIntegrator, MyLeapFrogIntegrator
+from io_utils import (
+    import_parts_data, import_simulation_parameters,
+    get_csv_header, separate_particle_data_arrays, convert_pysph_output
+)
+
+from integrators import (
+    MyEulerIntegrator, MyLeapFrogIntegrator, MyPECIntegrator
+)
 
 from integrator_steppers import (
-    BoundaryEulerStep, DomainSingleEulerStep,
-    BoundaryLFStep, DomainSingleLFStep
+    BoundaryEulerStep, DomainSingleEulerStep, DomainMultEulerStep,
+    BoundaryLFStep, DomainSingleLFStep, DomainMultLFStep,
+    BoundaryVerletStep, DomainSingleVerletStep, DomainMultVerletStep,
+    BoundaryPCStep, DomainSinglePCStep, DomainMultPCStep
 )
 
 from deformation_equations import DeformationRates
 
-from boundary_equations import BoundaryStress, DummyBoundary, BoundaryPressure
+from boundary_equations import (
+    BoundaryPressure, MyDummyBoundary, PositionDivergence,
+)
 
-from constitutive_equations import (ModifiedCamClay as MCCSolver,
-                                    DruckerPragerSolverExact as DPSolver,
-                                    WaterPressure as UndrainedPressure)
+from constitutive_equations import (
+    ModifiedCamClay as MCCSolver,
+    DruckerPragerSolverExact as DPSolver,
+    MohrCoulombSolverBui as MohrCSolver,
+    CASM as CASMSolver
+)
 
-from conservation_equations import (MomentumEquation, DensityEquation,
-                                    MomentumEquationPw)
+from conservation_equations import (
+    MomentumEquation2 as MomentumEquation,
+    DensityEquation,
+    MomentumEquationPw
+)
 
 from stress_equations import TrialStressDecomposition, TrialStress
 
-from monaghan_equations import (MonaghanArtificialViscosity as ArtVisc,
-                                PySPHArtificialStress as ArtStress)
-
-from kernel_corrections import (KernelGradientCorrection as KernelGradCorrect,
-                                KernelSum)
-
-from particle_shifting import (ParticleShiftPreCalcs as PSPreCalcs,
-                               ZhangParticleShift as ParticleShift,
+from kernel_corrections import (
+    KernelGradientCorrection as KernelGradCorrect, KernelSum
 )
+
+from up_equations import UndrainedPressure
+
+from particle_shifting import (
+    ParticleShiftPreCalcs as PSPreCalcs,
+    ZhangParticleShift as ParticleShift,
+)
+
+from monaghan_equations import MonaghanArtificialViscosity as ArtVisc
 
 # =============================================================================
 # ============================ Global variables ===============================
 
-TXT_PATH = "/data/Favero_Group/Projects/Input/Model.txt"
-CSV_PATH = "/data/Favero_Group/Projects/Input/Model.csv"
+TXT_PATH = "/data/Favero_Group/Projects/Tests/SF_Test.txt"
+CSV_PATH = "/data/Favero_Group/Projects/Tests/SF_Test.csv"
 
 # =============================================================================
 # =============================================================================
 
-
-# Define an 'Application' class by subclassing the pysph.solver.application.
 # Application class
 class SDPySPHApplication(Application):
 
@@ -88,7 +105,6 @@ class SDPySPHApplication(Application):
             self.nnps = sim_params['NNPS'].lower()  # Type of NNPS algorithm
             self.alpha = float(sim_params['alpha'])  # Monaghan alpha
             self.c0 = float(sim_params['c'])  # Initial sound speed
-            self.as_epsilon = float(sim_params['as_epsilon'])  # A. Stress
             self.pbc = int(sim_params['PBC'])  # Is periodic problem?
             self.pbcx = int(sim_params['PBCX'])  # Periodic in x?
             self.pbcy = int(sim_params['PBCY'])  # Periodic in y?
@@ -151,7 +167,7 @@ class SDPySPHApplication(Application):
             exit()
 
         # Initial smoothing length
-        self.h0 = self.kh*self.dp
+        self.h0 = self.kh * self.dp
 
         # Gravity acceleration
         self.gravity = 9.81
@@ -179,8 +195,11 @@ class SDPySPHApplication(Application):
         # Stress and strain regularization frequency
         self.ssr_freq = int(10)
 
+        # Particle shifting free/near free surface particles scaling coeff.
+        self.aps = 0.5
+
     def add_user_options(self, group):
-        """ User specified command line options, i.e. sys.argv calls. This is
+        """ User specified command line options, i.e., sys.argv calls. This is
         parsed before running the simulation such that the values passed by the
         user can be used to configure the application.
 
@@ -252,12 +271,6 @@ class SDPySPHApplication(Application):
         )
 
         group.add_argument(
-            "--monaghan-as-epsilon", action="store", type=float,
-            dest="as_epsilon", default=self.as_epsilon,
-            help="Monaghan's artificial stress scaling coefficient."
-        )
-
-        group.add_argument(
             "--pbc", action="store", type=int, dest="pbc", default=self.pbc,
             help="Select whether the problem has periodic boundary conditions "
                  "(0 = 'No', 1 = 'Yes')."
@@ -305,14 +318,16 @@ class SDPySPHApplication(Application):
             "--c_model", action="store", type=int, dest="c_model",
             default=self.c_model,
             help="Constitutive model for the material. "
-                 "0 = Elastic, 1 = Elastoplastic (Default: 1)"
+                 "0 = Elastic, 1 = Elastoplastic, 2 = Elasto-viscoplastic."
+                 "(Default: 1)"
         )
 
         group.add_argument(
             "--y_criterion", action="store", type=int, dest="y_criterion",
             default=self.y_criterion,
             help="Yield criterion if the constitutive model is not 'EL'. "
-                 "1 = Von Mises, 2 = Drucker-Prager, 3 = MCC. (Default: 2)"
+                 "1 = Von Mises, 2 = Drucker-Prager, 3 = MCC, "
+                 "4 = Mohr-Coulomb, 5 = CASM. (Default: 2)"
         )
 
         group.add_argument(
@@ -329,9 +344,9 @@ class SDPySPHApplication(Application):
 
         group.add_argument(
             "--sim-type", action="store", type=int, dest="sim_type",
-            default=0,
-            help="Type of simulation performed: '0'-Initialization, "
-                 "'1'-Failure. (Default: '0' - Initialization)"
+            default=1,
+            help="Type of simulation performed: '1'-Single and '2'-Undrained. "
+                 "(Default: '1' - Single)"
         )
 
         group.add_argument(
@@ -341,9 +356,24 @@ class SDPySPHApplication(Application):
         )
 
         group.add_argument(
+            "--drained-fs", action="store", type=int, dest="drained",
+            default=1,
+            help="Set whether free surfaces are drained or undrained: "
+                 "'1'- drained, '0'- undrained. (Default: '1' - Drained)"
+        )
+
+        group.add_argument(
             "--kdamp-eps", action="store", type=float, dest="kin_damp",
             default=0.001,
             help="Kinematic damping factor. (Default: 0.001)"
+        )
+
+        group.add_argument(
+            "--calc-normals", action="store", type=int, dest="calc_normals",
+            default=1,
+            help="Whether to calculate the normal unit vectors for the "
+                 "boundaries automatically or not: '1'-Yes, '0'-No. "
+                 "(Default: '1' - Yes.)"
         )
 
         group.add_argument(
@@ -391,9 +421,6 @@ class SDPySPHApplication(Application):
 
         if self.options.c0 != self.c0:
             self.c0 = self.options.c0
-
-        if self.options.as_epsilon != self.as_epsilon:
-            self.as_epsilon = self.options.as_epsilon
 
         if self.options.pbc != self.pbc:
             self.pbc = self.options.pbc
@@ -471,9 +498,17 @@ class SDPySPHApplication(Application):
         if self.options.bulkw is not None:
             self.bulkw = self.options.bulkw
 
+        # Drainage behavior of free surfaces
+        if self.options.drained is not None:
+            self.drained = self.options.drained
+
         # Kinematic damping factor
         if self.options.kin_damp is not None:
             self.damp_eps = self.options.kin_damp
+
+        # Whether to calculate boundary normals
+        if self.options.calc_normals is not None:
+            self.calc_normals = self.options.calc_normals
 
         # Confining pressure to be applied to all particles
         if self.options.sigma_c is not None:
@@ -505,17 +540,23 @@ class SDPySPHApplication(Application):
         # Select particles by type ('tag') and associate their names with those
         #  indices
         types_arr = part_data['type']
-        domain_idx = np.where(types_arr < 200)[0]
+        sediment_idx = np.where(types_arr < 200)[0]
+        domain_single_idx = np.where(types_arr <= 100)[0]
+        domain_mult_idx = np.where((100 < types_arr) & (types_arr < 200))[0]
         boundary_idx = np.where(types_arr >= 200)[0]
         part_types = {
-            'domain': domain_idx,  # All domain particles
+            'sediment': sediment_idx,  # All domain particles
+            'domain_single': domain_single_idx,  # Single phase material
+            'domain_mult': domain_mult_idx,  # Multiphase material
             'boundary': boundary_idx}  # Fixed boundary particles
 
         # Initialize the ParticleArrays and add them to a list that will be
         #  returned
-        domain = get_particle_array(name='domain')
+        sediment = get_particle_array(name='sediment')
+        domain_single = get_particle_array(name='domain_single')
+        domain_mult = get_particle_array(name='domain_mult')
         boundary = get_particle_array(name='boundary')
-        pas = [domain, boundary]
+        pas = [sediment, domain_single, domain_mult, boundary]
 
         # Initialize the counter for the total number of particles
         tot_num_parts = 0.0
@@ -523,11 +564,6 @@ class SDPySPHApplication(Application):
         # Populate each PySPH ParticleArray in pas with new properties and
         #  corresponding values, except stress and strain.
         for pa_type in pas:
-
-            # TODO: I believe I am generating duplicate (or unused)
-            #  properties for particles as it is generating them here and
-            #  then later on, I am adding them manually again. Check this
-            #  (10/17/2023)
 
             for key in part_data.keys():
                 if ((key[0] == 's' or key[0] == 'e') and len(key) == 3) or \
@@ -555,7 +591,7 @@ class SDPySPHApplication(Application):
             pa_type.add_property('arho', default=0.0)
 
             # Add Cauchy stress tensor
-            sigma = np.zeros(9*num_parts)
+            sigma = np.zeros(9 * num_parts)
             sig_keys = ['sxx', 'sxy', 'sxz', 'sxy', 'syy', 'syz', 'sxz', 'syz',
                         'szz']
 
@@ -603,13 +639,17 @@ class SDPySPHApplication(Application):
             # Accumulated displacement
             pa_type.add_property('disp', default=0.0, stride=3)
 
-            # Porosity
-            nv = part_data['nw'][part_types[pa_type.name]]
-            pa_type.add_property('nv', default=0.0, data=nv)
-
             # =================================================================
             # Add properties to domain particles only
-            if pa_type.name == 'domain':
+            if pa_type.name == 'domain_single' or 'domain_mult' or 'sediment':
+
+                # Porosity
+                nv = part_data['nw'][part_types[pa_type.name]]
+                pa_type.add_property('nv', default=0.0, data=nv)
+
+                # Divergence of position, used for particle shift and
+                # coupled formulations
+                pa_type.add_property('divr', default=0.0)  # div(position)
 
                 # Inverse of the L matrix to correct the kernel gradient
                 pa_type.add_property('l_mat', default=0.0, stride=9)
@@ -633,16 +673,12 @@ class SDPySPHApplication(Application):
                 # Artificial viscosity acceleration, av_a
                 pa_type.add_property('av_a', default=0.0, stride=3)
 
-                # Artificial stress acceleration, as_a
-                pa_type.add_property('as_a', default=0.0, stride=3)
-
                 # Kernel value for dp
-                # TODO: Check if can be converted to a constant, then do it!
                 wdp = self.kernel(self.sim_dim).kernel([0,0], self.dp, self.h0)
                 pa_type.add_constant('wdp', wdp)
 
                 # Add elastic strain tensors
-                eps_e = np.zeros(9*num_parts)
+                eps_e = np.zeros(9 * num_parts)
                 e_keys = ['exx', 'exy', 'exz', 'exy', 'eyy', 'eyz', 'exz',
                           'eyz', 'ezz']
                 for i, key in enumerate(e_keys):
@@ -653,7 +689,7 @@ class SDPySPHApplication(Application):
                         exit()
 
                 # Initialize plastic and total strain tensors
-                eps_p = np.zeros(9*num_parts)
+                eps_p = np.zeros(9 * num_parts)
                 eps = np.copy(eps_e)
 
                 # Make sure that Eps_zz = 0 if plane-strain
@@ -668,12 +704,7 @@ class SDPySPHApplication(Application):
                 pa_type.add_property('eps_p', default=0.0, data=eps_p,
                                      stride=9)
                 pa_type.add_property('eps_dot', default=0.0, stride=9)
-
-                # TODO: With the new way you are calculating eps_p in the
-                #  integrators, you can potentially eliminate this property and
-                #  calculations of it in the constitutive update equations.
                 pa_type.add_property('eps_p_dot', default=0.0, stride=9)
-
                 pa_type.add_property('spin_dot', default=0.0, stride=9)
                 pa_type.add_property('ep_acc', default=0.0)
                 pa_type.add_property('ep_eff', default=0.0)
@@ -700,7 +731,7 @@ class SDPySPHApplication(Application):
                 # Von Mises
                 if self.y_criterion == 1:
                     if self.sim_dim == 3:
-                        sy = 2*cohesion
+                        sy = 2 * cohesion
 
                     # Add property to particles
                     pa_type.add_property('aphi', default=0.0)
@@ -713,20 +744,21 @@ class SDPySPHApplication(Application):
                 #  phi = 0.
                 elif self.y_criterion == 2:
                     if self.sim_dim == 2:
-                        aphi = sqrt(6)*np.tan(phi) / \
-                            np.sqrt(3 + 4*np.power(np.tan(phi), 2))
-                        apsi = sqrt(6)*np.tan(psi) / \
-                            np.sqrt(3 + 4*np.power(np.tan(psi), 2))
-                        ac = sqrt(2) / np.sqrt(3 + 4*np.power(np.tan(phi), 2))
+                        aphi = sqrt(6) * np.tan(phi) / \
+                            np.sqrt(3 + 4 * np.power(np.tan(phi), 2))
+                        apsi = sqrt(6) * np.tan(psi) / \
+                            np.sqrt(3 + 4 * np.power(np.tan(psi), 2))
+                        ac = sqrt(6) / \
+                              np.sqrt(3 + 4 * np.power(np.tan(phi), 2))
 
                     else:
-                        sy = 2*cohesion
+                        sy = 2 * cohesion
 
                         # Fit to the MCYC through the outer edges
                         #  ("-" compression)
-                        aphi = 2*sqrt(6)*np.sin(phi) / (3 - np.sin(phi))
-                        apsi = 2*sqrt(6)*np.sin(psi) / (3 - np.sin(psi))
-                        ac = sqrt(6)*np.cos(phi) / (3 - np.sin(phi))
+                        aphi = 2 * sqrt(6) * np.sin(phi) / (3 - np.sin(phi))
+                        apsi = 2 * sqrt(6) * np.sin(psi) / (3 - np.sin(psi))
+                        ac = 2 * sqrt(6) * np.cos(phi) / (3 - np.sin(phi))
 
                     pa_type.add_property('aphi', default=0.0, data=aphi)
                     pa_type.add_property('apsi', default=0.0, data=apsi)
@@ -735,16 +767,121 @@ class SDPySPHApplication(Application):
 
                 # Modified Cam-Clay model
                 elif self.y_criterion == 3:
+                    pc = part_data['pc'][part_types[pa_type.name]]
+                    cr = part_data['cr'][part_types[pa_type.name]]
+                    cc = part_data['cc'][part_types[pa_type.name]]
+                    ms = part_data['ms'][part_types[pa_type.name]]
+
+                    pa_type.add_property('pc', default=0.0, data=pc)
+                    pa_type.add_property('cr', default=0.0, data=cr)
+                    pa_type.add_property('cc', default=0.0, data=cc)
+                    pa_type.add_property('ms', default=0.0, data=ms)
 
                     # Void ratio
                     e = nv / (1 - nv)
                     pa_type.add_property('void_ratio', default=0.0, data=e)
 
+                # CASM model
+                elif self.y_criterion == 5:
+
+                    # ---------------------------------------------------------
+                    # Adicionando alguns parametros
+                    # ---------------------------------------------------------
+
+                    # -1 elástico; 0 elástico mas plastificou no passado;
+                    #  1 plástico; OBS: início elástico
+                    pa_type.add_property('s_plast_flag', default=0.0, data=0)
+
+                    # ínidice de vazios
+                    pa_type.add_property('s_e', default=1.0, data=0.0)
+
+                    # parâmetro de estado
+                    pa_type.add_property('s_y', default=1.0, data=0.0)
+
+                    # tensao de pre-adensamento
+                    # pa_type.add_property('s_p0', default=1.0, data=0.0)
+
+                    # contador de deformcao volumétrica ?discutir se mantém
+                    pa_type.add_property('s_ev', default=0.0, data=0.0)
+
+                    # ínidice de vazios específico
+                    pa_type.add_property('s_v', default=1.0, data=0.0)
+
+                    # CASM parameters
+                    pa_type.add_property('s_q', default=1.0, data=0.0)
+                    pa_type.add_property('s_p', default=1.0, data=0.0)
+                    pa_type.add_property('s_eta', default=1.0, data=0.0)
+                    pa_type.add_property('s_teta', default=1.0, data=0.0)
+                    pa_type.add_property('s_m_teta', default=1.0, data=0.0)
+                    pa_type.add_property('s_eta_m_teta', default=1.0, data=0.0)
+
+                    # ínidice de vazios específico inicial (não deve ser
+                    #  atualizado)
+                    pa_type.add_property('s_v0', default=1.0, data=0.0)
+                    pa_type.add_property('s_yield', default=1.0, data=0.0)
+
+                    phi = (
+                            part_data['p_phi'][part_types[pa_type.name]] *
+                            pi / 180.0
+                    )
+                    sinPhi = np.sin(phi)
+
+                    # M na condição de compressão triaxial
+                    mtc = 6.0 * sinPhi / (3.0 - sinPhi)
+
+                    # Parametro usado na equacao de Mteta
+                    a = ((3.0 - sinPhi) / (3.0 + sinPhi)) ** 4.0
+
+                    pa_type.add_property('mtc', default=1.0, data=mtc)
+                    pa_type.add_property('a', default=1.0, data=a)
+                    pa_type.add_property('s_bulk', default=0.0, data=0.0)
+                    pa_type.add_property('s_shear', default=1.0, data=0.0)
+                    pa_type.add_property('s_s1', default=1.0, data=0.0)
+                    pa_type.add_property('s_s2', default=1.0, data=0.0)
+                    pa_type.add_property('s_s3', default=1.0, data=0.0)
+                    pa_type.add_property('s_e1', default=1.0, data=0.0)
+                    pa_type.add_property('s_e2', default=1.0, data=0.0)
+                    pa_type.add_property('s_e3', default=1.0, data=0.0)
+
+                    pa_type.add_property('s_v1', default=1.0, data=0.0)
+                    pa_type.add_property('s_v2', default=1.0, data=0.0)
+                    pa_type.add_property('s_v3', default=1.0, data=0.0)
+                    pa_type.add_property('s_v4', default=1.0, data=0.0)
+                    pa_type.add_property('s_v5', default=1.0, data=0.0)
+                    pa_type.add_property('s_v6', default=1.0, data=0.0)
+                    pa_type.add_property('s_v7', default=1.0, data=0.0)
+                    pa_type.add_property('s_v8', default=1.0, data=0.0)
+                    pa_type.add_property('s_v9', default=1.0, data=0.0)
+
+                    # DruckerPrager
+                    if self.sim_dim == 2:
+                        aphi = sqrt(6) * np.tan(phi) / \
+                               np.sqrt(3 + 4 * np.power(np.tan(phi), 2))
+                        apsi = sqrt(6) * np.tan(psi) / \
+                               np.sqrt(3 + 4 * np.power(np.tan(psi), 2))
+                        ac = sqrt(2) / np.sqrt(
+                            3 + 4 * np.power(np.tan(phi), 2))
+
+                    else:
+                        sy = 2 * cohesion
+
+                        # Fit to the MCYC through the outer edges
+                        #  ("-" compression)
+                        aphi = 2 * sqrt(6) * np.sin(phi) / (3 - np.sin(phi))
+                        apsi = 2 * sqrt(6) * np.sin(psi) / (3 - np.sin(psi))
+                        ac = sqrt(6) * np.cos(phi) / (3 - np.sin(phi))
+
+                    pa_type.add_property('aphi', default=0.0, data=aphi)
+                    pa_type.add_property('apsi', default=0.0, data=apsi)
+                    pa_type.add_property('ac', default=0.0, data=ac)
+                    pa_type.add_property('sy', default=0.0, data=sy)
+                    pa_type.add_property('h_mod', default=0.0)
 
                 # =================== Integrator properties ===================
-                # Add tracking parameters at previous step for leapfrog
-                # integrator
-                if self.integrator == 1:
+                # Add tracking parameters at previous step for leapfrog and PC
+                #  integrators
+                if (self.integrator == 1 or self.integrator == 2 or
+                        self.integrator == 4):
 
                     # Velocity acceleration at step n
                     pa_type.add_property('an', default=0.0, stride=3)
@@ -758,19 +895,40 @@ class SDPySPHApplication(Application):
                     # Strain rate at step n
                     pa_type.add_property('eps_dotn', default=0.0, stride=9)
 
+                # Add tracking parameters at previous step for PC and Verlet
+                #  integrators
+                if self.integrator == 2 or self.integrator == 3:
+
+                    # Velocity at step "n"
+                    pa_type.add_property('vn', default=0.0, stride=3)
+
+                    # Mass density at step "n"
+                    pa_type.add_property('rhon', default=0.0)
+
+                    # Stress at step n
+                    pa_type.add_property('sigman', default=0.0, stride=9)
+
+                    # Strain at step n
+                    pa_type.add_property('epsn', default=0.0, stride=9)
+
+                # Add previous position for PC integrator
+                if self.integrator == 2:
+                    pa_type.add_property('rn', default=0.0, stride=3)
+
                 # =============================================================
 
-                # ============= Properties for undrained simulations ===========
-                if self.sim_type == 2:
-                    pa_type.add_property('pwdt', default=0.0)
+                # ======== Properties for coupled/undrained simulations =======
+                pa_type.add_property('pwdt', default=0.0)  # pwp rate
+                pa_type.add_property('pwdtn', default=0.0)
                 # =============================================================
 
                 # ================ Particle shifting properties ===============
-                pa_type.add_property('divx', default=0.0)  # div(position)
                 pa_type.add_property('pv', default=0.0)  # vij.xij/rij
                 pa_type.add_property('pstype', default=0, type="int")
                 pa_type.add_property('phips', default=0.0) # Reduce normal du
-                pa_type.add_property('gradc', default=0.0, stride=3)  # Sum(DW)
+
+                # TODO: Duplicated with gwsum - delete after fixing all PS
+                pa_type.add_property('dwsum', default=0.0, stride=3)  # Sum(DW)
                 pa_type.add_property('gfick', default=0.0, stride=3)  # D^C
                 pa_type.add_property('vps', default=0.0, stride=3) # PS vel.
 
@@ -797,33 +955,39 @@ class SDPySPHApplication(Application):
                                                'gid', 'type', 'disp', 'ep_eff',
                                                'pw', 'nv', 'pc', 'void_ratio'])
 
-                else:
+                elif self.y_criterion == 5:  # CASM
                     pa_type.set_output_arrays(['x', 'y', 'z', 'u', 'v', 'w',
                                                'rho', 'eps', 'eps_e', 'eps_p',
                                                'ep_acc', 'p', 'q', 'sigma',
                                                'gid', 'type', 'disp', 'ep_eff',
-                                               'pw', 'nv'])
+                                               'pw', 's_ocr', 's_e', 's_p',
+                                               's_q', 's_teta', 's_m_teta',
+                                               's_p0', 's_v', 's_y', 's_yield',
+                                               's_ev', 'bulk', 'shear',
+                                               's_shear', 's_bulk', 's_v0',
+                                               's_eta', 's_eta_m_teta', 's_s1',
+                                               's_s2', 's_s3', 's_e1', 's_e2',
+                                               's_e3', 's_plast_flag', 's_v1',
+                                               's_v2', 's_v3', 's_v4', 's_v5',
+                                               's_v6', 's_v7', 's_v8', 's_v9'])
+
+                else:
+                    if self.sim_dim == 2:
+                        pa_type.set_output_arrays(
+                            ['x', 'y', 'u', 'v', 'm', 'rho', 'eps', 'eps_e',
+                             'ep_acc', 'sigma', 'gid', 'type', 'disp', 'pw',
+                             'n', 'p']
+                        )
+                    else:
+                        pa_type.set_output_arrays(
+                            ['x', 'y', 'z', 'u', 'v', 'w', 'm', 'rho', 'eps',
+                             'eps_e', 'ep_acc', 'sigma', 'gid', 'type', 'disp',
+                             'pw']
+                            )
 
             # =================================================================
             # Add Properties to boundary particles
             if pa_type.name == 'boundary':
-
-                # ==== For Vane shear simulations ====
-
-                # Initial x-coordinate
-                pa_type.add_property(
-                    'x0',
-                    default=0.0,
-                    data=part_data['x'][part_types[pa_type.name]],
-                )
-
-                # Initial y-coordinate
-                pa_type.add_property(
-                    'y0',
-                    default=0.0,
-                    data=part_data['y'][part_types[pa_type.name]],
-                )
-                # ====================================
 
                 # Add boundary condition type (0/1 - Fixed/Slip, 2 - Adami)
                 bc = np.zeros(num_parts, dtype='i')
@@ -837,23 +1001,36 @@ class SDPySPHApplication(Application):
                 pa_type.add_property('bc', default=0, data=bc, type='int')
 
                 # ==== ADD NORMAL VECTORS TO THE BOUNDARY PARTICLES ==== #
-                n_vec = np.zeros(3 * num_parts)
-                keys = ['nx', 'ny', 'nz']
 
-                for i, key in enumerate(keys):
-                    if key in part_data.keys():
-                        n_vec[i::3] = \
-                            part_data[key][part_types[pa_type.name]]
-                    else:
-                        print("Key \'%s\' not found!" % key)
-                        exit()
+                # Calculate normals automatically
+                if self.calc_normals:
+                    n_vec = boundary_normals(
+                        [boundary],
+                        pa_type,
+                        self.kernel,
+                        self.sim_dim,
+                        2.0
+                    )
+
+                # Read from file
+                else:
+                    n_vec = np.zeros(3 * num_parts)
+                    keys = ['nx', 'ny', 'nz']
+
+                    for i, key in enumerate(keys):
+                        if key in part_data.keys():
+                            n_vec[i::3] = \
+                                part_data[key][part_types[pa_type.name]]
+                        else:
+                            print("Key \'%s\' not found!" % key)
+                            exit()
 
                 pa_type.add_property('n', default=0.0, data=n_vec, stride=3)
 
                 # ====================================================== #
 
                 # Add prescribed boundary velocity
-                vb = np.zeros(3*num_parts)
+                vb = np.zeros(3 * num_parts)
                 keys = ['u', 'v', 'w']
 
                 for i, key in enumerate(keys):
@@ -865,11 +1042,25 @@ class SDPySPHApplication(Application):
 
                 pa_type.add_property('vb', default=0.0, data=vb, stride=3)
 
-                pa_type.set_output_arrays(['x', 'y', 'z', 'vb', 'rho', 'disp',
-                                           'sigma', 'gid', 'type', 'pw', 'n'])
+                if self.sim_dim == 2:
+                    pa_type.set_output_arrays(
+                        ['x', 'y', 'vb', 'disp', 'sigma', 'gid', 'type', 'pw',
+                         'n', 'p']
+                        )
+                else:
+                    pa_type.set_output_arrays(
+                        ['x', 'y', 'z', 'vb', 'disp', 'sigma', 'gid', 'type',
+                         'pw', 'n']
+                    )
 
             # load balancing properties
             pa_type.set_lb_props(list(pa_type.properties.keys()))
+
+            # =================================================================
+            # =================================================================
+
+        # Get rid of sediment particle array
+        pas.remove(sediment)
 
         return pas
 
@@ -879,35 +1070,97 @@ class SDPySPHApplication(Application):
 
         # Forward Euler
         if self.integrator == 0:
-            domain_stepper = DomainSingleEulerStep(
+            domain_single_stepper = DomainSingleEulerStep(
                 sim_type=self.sim_type,
                 damp_eps=self.damp_eps,
                 damp_time=self.damp_time,
             )
-            boundary_stepper = BoundaryEulerStep()
+
+            domain_mult_stepper = DomainMultEulerStep(
+                sim_type=self.sim_type,
+                damp_eps=self.damp_eps,
+                damp_time=self.damp_time,
+            )
+
+            boundary_stepper = BoundaryEulerStep(
+                xc=self.xc,
+                yc=self.yc,
+                avel=self.avel,
+            )
 
             integrator = MyEulerIntegrator(
-                domain=domain_stepper,
+                domain_single=domain_single_stepper,
+                domain_mult=domain_mult_stepper,
                 boundary=boundary_stepper,
             )
 
         # Leap-Frog
         elif self.integrator == 1:
-            domain_stepper = DomainSingleLFStep(
+            domain_single_stepper = DomainSingleLFStep(
                 damp_eps=self.damp_eps,
                 damp_time=self.damp_time,
             )
 
-            boundary_stepper = BoundaryLFStep()
+            domain_mult_stepper = DomainMultLFStep(
+                damp_eps=self.damp_eps,
+                damp_time=self.damp_time,
+            )
+
+            boundary_stepper = BoundaryLFStep(
+                xc=self.xc,
+                yc=self.yc,
+                avel=self.avel,
+            )
 
             integrator = MyLeapFrogIntegrator(
-                domain=domain_stepper,
+                domain_single=domain_single_stepper,
+                domain_mult=domain_mult_stepper,
+                boundary=boundary_stepper,
+            )
+
+        # Predictor-Corrector (PC)
+        elif self.integrator == 2:
+            domain_single_stepper = DomainSinglePCStep(
+                damp_eps=self.damp_eps,
+                damp_time=self.damp_time,
+            )
+
+            domain_mult_stepper = DomainMultPCStep()
+
+            boundary_stepper = BoundaryPCStep()
+
+            integrator = MyPECIntegrator(
+                domain_single=domain_single_stepper,
+                domain_mult=domain_mult_stepper,
+                boundary=boundary_stepper,
+            )
+
+        # Verlet
+        elif self.integrator == 3:
+            domain_single_stepper = DomainSingleVerletStep(
+                damp_eps=self.damp_eps,
+                damp_time=self.damp_time,
+            )
+
+            domain_mult_stepper = DomainMultVerletStep()
+
+            boundary_stepper = BoundaryVerletStep()
+
+            integrator = MyPECIntegrator(
+                domain_single=domain_single_stepper,
+                domain_mult=domain_mult_stepper,
                 boundary=boundary_stepper,
             )
 
         # Default (Euler)
         else:
-            domain_stepper = DomainSingleEulerStep(
+            domain_single_stepper = DomainSingleEulerStep(
+                sim_type=self.sim_type,
+                damp_eps=self.damp_eps,
+                damp_time=self.damp_time,
+            )
+
+            domain_mult_stepper = DomainMultEulerStep(
                 sim_type=self.sim_type,
                 damp_eps=self.damp_eps,
                 damp_time=self.damp_time,
@@ -916,7 +1169,8 @@ class SDPySPHApplication(Application):
             boundary_stepper = BoundaryEulerStep()
 
             integrator = MyEulerIntegrator(
-                domain=domain_stepper,
+                domain_single=domain_single_stepper,
+                domain_mult=domain_mult_stepper,
                 boundary=boundary_stepper,
             )
 
@@ -939,22 +1193,66 @@ class SDPySPHApplication(Application):
             # DP or VonMises
             ConstitutiveSolver = DPSolver
             constitutive_solver_kwargs_single = {
-                "dest": 'domain',
+                "dest": 'domain_single',
                 "sources": None,
                 "c_model": self.c_model,
-                "debug": self.debug,
+            }
+            constitutive_solver_kwargs_mult = {
+                "dest": 'domain_mult',
+                "sources": None,
+                "c_model": self.c_model,
             }
         elif self.y_criterion == 3:
             # MCC
             ConstitutiveSolver = MCCSolver
             constitutive_solver_kwargs_single = {
-                "dest": 'domain',
+                "dest": 'domain_single',
                 "sources": None,
                 "nu": 0.3,
                 "c_model": self.c_model,
                 "tol": 1e-5,
                 "max_iter": 100,
                 "debug": self.debug,
+            }
+            constitutive_solver_kwargs_mult = {
+                "dest": 'domain_mult',
+                "sources": None,
+                "nu": 0.3,
+                "c_model": self.c_model,
+                "tol": 1e-5,
+                "max_iter": 100,
+                "debug": self.debug,
+            }
+        elif self.y_criterion == 4:
+            # Mohr-Coulomb
+            ConstitutiveSolver = MohrCSolver
+            constitutive_solver_kwargs_single = {
+                "dest": 'domain_single',
+                "sources": None,
+                "c_model": self.c_model,
+                "debug": self.debug,
+            }
+            constitutive_solver_kwargs_mult = {
+                "dest": 'domain_mult',
+                "sources": None,
+                "c_model": self.c_model,
+                "debug": self.debug,
+            }
+        elif self.y_criterion == 5:
+            # CASM
+            ConstitutiveSolver = CASMSolver
+            constitutive_solver_kwargs_single = {
+                "dest": 'domain_single',
+                "sources": None,
+                "c_model": self.c_model,
+                "debug": self.debug,
+            }
+            constitutive_solver_kwargs_mult = {
+                "dest": 'domain_mult',
+                "sources": None,
+                "c_model": self.c_model,
+                "debug": self.debug,
+                "bulkw": self.bulkw,
             }
         else:
             raise NotImplementedError("Unknown yield criterion during equation"
@@ -969,22 +1267,21 @@ class SDPySPHApplication(Application):
                     equations=[
                         KernelSum(
                             dest='boundary',
-                            sources=['domain'],
-                            debug=self.debug,
-                            bp=self.bp,
+                            sources=['domain_single'],
                         ),
                         KernelSum(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
-                            debug=self.debug,
-                            bp=self.bp,
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                         ),
                         KernelGradCorrect(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                             kgc=self.kgc,
                             sim_dim=self.sim_dim,
-                            debug=self.debug,
+                        ),
+                        PositionDivergence(
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                         ),
                     ],
                     real=True
@@ -993,15 +1290,16 @@ class SDPySPHApplication(Application):
                 # Group 2
                 Group(
                     equations=[
-                        BoundaryStress(
+                        MyDummyBoundary(
                             dest='boundary',
-                            sources=['domain'],
+                            sources=['domain_single'],
                             sim_dim=self.sim_dim,
-                            debug_bound=self.bp,
+                            coeff=0.0,
+                            cf=1.0,
                         ),
                         PSPreCalcs(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                             sim_dim=self.sim_dim,
                         ),
                     ],
@@ -1012,13 +1310,17 @@ class SDPySPHApplication(Application):
                 Group(
                     equations=[
                         DeformationRates(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                         ),
                         DensityEquation(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
-                            debug=self.debug,
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
+                        ),
+                        ParticleShift(
+                            dest='domain_single',
+                            sources=['domain_single'],
+                            h0=self.h0,
                         ),
                     ],
                     real=True
@@ -1028,34 +1330,26 @@ class SDPySPHApplication(Application):
                 Group(
                     equations=[
                         TrialStress(
-                            dest='domain',
-                            sources=['domain'],
-                            debug=self.debug,
+                            dest='domain_single',
+                            sources=None,
                         ),
                         TrialStressDecomposition(
-                            dest='domain',
-                            sources=['domain'],
-                            debug=self.debug,
+                            dest='domain_single',
+                            sources=None,
                         ),
                         ConstitutiveSolver(
                             **constitutive_solver_kwargs_single
                         ),
                         MomentumEquation(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                             sigma_c=self.sigma_c,
                         ),
                         ArtVisc(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'boundary'],
                             alpha=self.alpha,
                             beta=self.beta,
-                        ),
-                        ParticleShift(
-                            dest='domain',
-                            sources=['domain'],
-                            h0=self.h0,
-                            simdim=self.sim_dim,
                         ),
                     ],
                     real=True
@@ -1071,22 +1365,41 @@ class SDPySPHApplication(Application):
                     equations=[
                         KernelSum(
                             dest='boundary',
-                            sources=['domain'],
-                            debug=self.debug,
-                            bp=self.bp,
+                            sources=['domain_single','domain_mult'],
                         ),
                         KernelSum(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
-                            debug=self.debug,
-                            bp=self.bp,
+                            dest='domain_single',
+                            sources=['domain_single','domain_mult',
+                                     'boundary'],
+                        ),
+                        KernelSum(
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                         ),
                         KernelGradCorrect(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single','domain_mult',
+                                     'boundary'],
                             kgc=self.kgc,
                             sim_dim=self.sim_dim,
-                            debug=self.debug,
+                        ),
+                        KernelGradCorrect(
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                            kgc=self.kgc,
+                            sim_dim=self.sim_dim,
+                        ),
+                        PositionDivergence(
+                            dest='domain_single',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                        ),
+                        PositionDivergence(
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                         ),
                     ],
                     real=True
@@ -1095,21 +1408,23 @@ class SDPySPHApplication(Application):
                 # Group 2
                 Group(
                     equations=[
-                        BoundaryStress(
+                        MyDummyBoundary(
                             dest='boundary',
-                            sources=['domain'],
+                            sources=['domain_single', 'domain_mult'],
                             sim_dim=self.sim_dim,
-                            debug_bound=self.bp,
+                            coeff=0.0,
+                            cf=1.0,
                         ),
-                        BoundaryPressure(
-                            dest='boundary',
-                            sources=['domain'],
-                            gravity=self.gravity,
+                        PSPreCalcs(
+                            dest='domain_single',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                             sim_dim=self.sim_dim,
                         ),
                         PSPreCalcs(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                             sim_dim=self.sim_dim,
                         ),
                     ],
@@ -1120,13 +1435,34 @@ class SDPySPHApplication(Application):
                 Group(
                     equations=[
                         DeformationRates(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                        ),
+                        DeformationRates(
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                         ),
                         DensityEquation(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
-                            debug=self.debug,
+                            dest='domain_single',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                        ),
+                        DensityEquation(
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                        ),
+                        ParticleShift(
+                            dest='domain_single',
+                            sources=['domain_single'],
+                            h0=self.h0,
+                        ),
+                        ParticleShift(
+                            dest='domain_mult',
+                            sources=['domain_mult'],
+                            h0=self.h0,
                         ),
                     ],
                     real=True
@@ -1136,50 +1472,77 @@ class SDPySPHApplication(Application):
                 Group(
                     equations=[
                         TrialStress(
-                            dest='domain',
-                            sources=['domain'],
-                            debug=self.debug,
+                            dest='domain_single',
+                            sources=['domain_single'],
+                        ),
+                        TrialStress(
+                            dest='domain_mult',
+                            sources=['domain_mult'],
                         ),
                         TrialStressDecomposition(
-                            dest='domain',
-                            sources=['domain'],
-                            debug=self.debug,
+                            dest='domain_single',
+                            sources=['domain_single'],
+                        ),
+                        TrialStressDecomposition(
+                            dest='domain_mult',
+                            sources=['domain_mult'],
                         ),
                         ConstitutiveSolver(
                             **constitutive_solver_kwargs_single
                         ),
+                        ConstitutiveSolver(
+                            **constitutive_solver_kwargs_mult
+                        ),
+                        MomentumEquation(
+                            dest='domain_single',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                            sigma_c=self.sigma_c,
+                        ),
                         MomentumEquationPw(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                             sigma_c=self.sigma_c,
                         ),
                         ArtVisc(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_single',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
+                            alpha=self.alpha,
+                            beta=self.beta,
+                        ),
+                        ArtVisc(
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                             alpha=self.alpha,
                             beta=self.beta,
                         ),
                         UndrainedPressure(
-                            dest='domain',
-                            sources=['domain', 'boundary'],
+                            dest='domain_mult',
+                            sources=['domain_single', 'domain_mult',
+                                     'boundary'],
                             bulkw=self.bulkw,
                             sim_dim=self.sim_dim,
                             drained=self.drained,
                         ),
-                        ParticleShift(
-                            dest='domain',
-                            sources=['domain'],
-                            h0=self.h0,
-                            simdim=self.sim_dim,
+                        BoundaryPressure(
+                            dest='boundary',
+                            sources=['domain_single', 'domain_mult'],
+                            gravity=self.gravity,
+                            sim_dim=self.sim_dim,
                         ),
                     ],
                     real=True
                 ),
             ]
 
-        # Not implemented
+        # Modify it according to preferred default formulation
         else:
-            raise NotImplementedError("Unknown simulation type during equation")
+            equations = []
+            print("Not implemented!!!")
+            return 0
 
         return equations
 
@@ -1224,7 +1587,7 @@ class SDPySPHApplication(Application):
             os.mkdir(dir_path)
 
         # Save output files to the VTU directory with VTU format.
-        convert_pysph_output(in_path, dir_path, ftype=1, version='10')
+        convert_pysph_output(in_path, dir_path, self.sim_dim, 2)
 
 
 # After setting up the framework, instantiate the class (which includes the
