@@ -1,6 +1,8 @@
 # GEOSPH
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384662.svg)](https://doi.org/10.5281/zenodo.21384662)
+![Version](https://img.shields.io/badge/version-v1.0.0-blue)
+![Python](https://img.shields.io/badge/python-3.x-blue)
 
 **GEOSPH** (Geomechanics Smoothed Particle Hydrodynamics) is a computational research framework for the numerical simulation of large-deformation geomechanics problems using **Smoothed Particle Hydrodynamics (SPH)**.
 
@@ -18,9 +20,11 @@ GEOSPH is intended primarily as a research and educational platform. New capabil
 
 ---
 
-## Citation
+## How to Cite
 
-If GEOSPH contributes to your published research, please cite the software using the citation below.
+If you use GEOSPH in academic work:
+
+- Cite the GEOSPH software (Zenodo DOI) to acknowledge the software framework using the citation below.
 
 > Favero Neto, A. H. (2026). **GEOSPH: A Smoothed Particle Hydrodynamics Framework for Computational Geomechanics** (Version 1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21384662
 
