@@ -2,19 +2,18 @@ cff-version: 1.2.0
 
 message: "If you use GEOSPH in your research, please cite this software."
 
+title: "GEOSPH: A Smoothed Particle Hydrodynamics Framework for Computational Geomechanics"
+
 authors:
   - family-names: "Favero Neto"
     given-names: "Alomir H."
     orcid: "https://orcid.org/0000-0002-1202-2958"
-
-title: "GEOSPH: A Smoothed Particle Hydrodynamics Framework for Computational Geomechanics"
 
 version: "1.0.0"
 
 date-released: "2026-07-15"
 
 repository-code: "https://github.com/alomirhfn/GEOSPH"
-doi: "10.xxxx/zenodo.xxxxx"
 
 keywords:
   - "Smoothed Particle Hydrodynamics"
@@ -26,8 +25,6 @@ keywords:
 
 abstract: >
   GEOSPH is a computational framework for large-deformation geomechanics
-  based on the Smoothed Particle Hydrodynamics (SPH) method. The software
-  provides numerical capabilities for simulating complex geotechnical
-  problems using meshfree computational methods.
-
-license: GNU GPL-3.0
+  based on the Smoothed Particle Hydrodynamics method. The software extends
+  PySPH with numerical formulations, constitutive models, boundary conditions,
+  and other capabilities developed for computational geomechanics.
