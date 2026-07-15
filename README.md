@@ -57,7 +57,7 @@ Please see:
 
 Questions regarding GEOSPH may be directed to:
 
-**Dr. Alomir H. Favero Neto**  
+**Prof. Alomir H. Favero Neto**  
 Department of Civil and Environmental Engineering  
 Bucknell University  
 Email: alomir.favero@bucknell.edu
