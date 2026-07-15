@@ -18,13 +18,19 @@ GEOSPH is intended primarily as a research and educational platform. New capabil
 
 ## Citation
 
-If GEOSPH contributes to your published research, please cite the software and the associated reference below.
+If GEOSPH contributes to your published research, please cite the software using the citation below.
 
-Current reference:
+> Favero Neto, A. H. (2026). **GEOSPH: A Smoothed Particle Hydrodynamics Framework for Computational Geomechanics** (Version 1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21384662
 
-> del Castillo, E. M., Favero Neto, A. H., & Borja, R. I. (2021). *Fault propagation and surface rupture in geologic materials with a meshfree continuum method*. Acta Geotechnica, 16, 2463–2486. https://doi.org/10.1007/s11440-021-01233-6
+BibTeX and additional citation formats are available through the Zenodo record and GitHub's **"Cite this repository"** feature.
 
-*A dedicated software citation (Zenodo DOI) will be provided beginning with the official Version 1.0 release.*
+## Related Publications
+
+The numerical methods implemented in GEOSPH have been described and applied in a number of publications, including:
+
+- Favero Neto, A. H., Oliveira, G. R. A., & Cerna-Diaz, A. (2026). Meshless Numerical Modeling of Vane Shear Test. Proceedings of Geo-Congress 2026, Salt Lake City, USA. https://doi.org/10.1061/9780784486740.01
+- del Castillo, E. M., Borja, R. I., & Favero Neto, A. H. (2026). A Coupled u–pw SPH Formulation for Hydromechanical Modeling of Retrogressive Landslides and Comparison With a Penalty-Based Approach. International Journal for Numerical and Analytical Methods in Geomechanics, 50(10), 4057-4334. https://doi.org/10.1002/nag.70322
+- Favero Neto, A. H., Oliveira, G. R. A., Rasmussen, L. L., & Rógenes, E. (2025). Large Deformation and Critical State Analysis of the Fundão Tailings Dam. Proceedings of Geo-Extreme 2025, Long Beach, USA. https://doi.org/10.1061/9780784486511.009
 
 ---
 
