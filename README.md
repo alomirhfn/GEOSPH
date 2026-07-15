@@ -23,7 +23,6 @@
 
 # GEOSPH
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384662.svg)](https://doi.org/10.5281/zenodo.21384662)
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.x-blue)
 
