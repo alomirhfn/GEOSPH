@@ -1,5 +1,7 @@
 # GEOSPH
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384662.svg)](https://doi.org/10.5281/zenodo.21384662)
+
 **GEOSPH** (Geomechanics Smoothed Particle Hydrodynamics) is a computational research framework for the numerical simulation of large-deformation geomechanics problems using **Smoothed Particle Hydrodynamics (SPH)**.
 
 The software was originally developed by **Dr. Alomir Favero** as an extension of his doctoral research at Stanford University and has since evolved into a research platform supporting the development, verification, and application of advanced SPH formulations for geotechnical engineering.
