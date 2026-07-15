@@ -1,3 +1,26 @@
+<p align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="./assets/branding/geosph-logo-dark.png">
+    <source
+      media="(prefers-color-scheme: light)"
+      srcset="./assets/branding/geosph-logo-light.png">
+    <img
+      alt="GEOSPH — Geomechanics Smoothed Particle Hydrodynamics"
+      src="./assets/branding/geosph-logo-light.png"
+      width="900">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://doi.org/10.5281/zenodo.21384662">
+    <img
+      src="https://zenodo.org/badge/DOI/10.5281/zenodo.21384662.svg"
+      alt="DOI">
+  </a>
+</p>
+
 # GEOSPH
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21384662.svg)](https://doi.org/10.5281/zenodo.21384662)
