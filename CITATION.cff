@@ -1,13 +1,9 @@
 cff-version: 1.1.0
 message: "If you use this software, please cite it as below."
-
 authors:
-  - family-names: "Favero Neto"
-    given-names: "Alomir H."
-    orcid: "https://orcid.org/0000-0002-1202-2958"
-
+- family-names: Favero
+  given-names: Alomir
+orcid: https://orcid.org/0000-0002-1202-2958
 title: "GEOSPH: A Smoothed Particle Hydrodynamics Framework for Computational Geomechanics"
-
-version: "v1.0.0"
-
-date-released: "2026-07-15"
+version: v1.0.0
+date-released: 2026-07-15
