@@ -1,9 +1,36 @@
-The core functionality, structure, and implementation of GEOSPH was done by Dr. Alomir Favero Neto. 
-Individuals listed below have contributed features, documentation, or project-specific capabilities (as described). 
-Such contributions do not constitute co-development of the GEOSPH framework.
+# Contributors
 
-Dr. Benjamin Strong (né Mullet) - Added exponential softening for Drucker-Prager parameters (2023)
+GEOSPH has benefited from contributions from collaborators and students throughout its development.
 
-Dr. Enrique M. del Castillo - Added Modified Cam Clay (MCC) constitutive model (2024)
+The original software architecture, core numerical framework, and primary implementation were developed by **Dr. Alomir H. Favero Neto**. The contributors listed below implemented project-specific capabilities that have expanded the functionality of GEOSPH.
 
-Dr. Erick Rogenes - Added Clay and Sand Model (CASM) constitutive model (2024)
+These contributions are gratefully acknowledged. Recognition as a contributor does not, by itself, imply co-development of the underlying GEOSPH framework.
+
+---
+
+## Constitutive Models
+
+### Modified Cam Clay (MCC)
+**Contributor:** Dr. Enrique M. del Castillo (2024)
+
+- Initial implementation of the Modified Cam Clay constitutive model.
+
+### Clay and Sand Model (CASM)
+**Contributor:** Dr. Erick Rogenes (2024)
+
+- Initial implementation of the Clay and Sand Model constitutive model.
+
+---
+
+## Material Models
+
+### Drucker–Prager Exponential Softening
+**Contributor:** Dr. Benjamin Strong (formerly Benjamin Mullet) (2023)
+
+- Implementation of exponential softening for Drucker–Prager material parameters.
+
+---
+
+## Future Contributions
+
+Additional contributors will be acknowledged here as GEOSPH continues to evolve.
